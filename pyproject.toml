@@ -1,11 +1,8 @@
 [project]
 name = "polars-info"
 version = "0.1.0"
-description = "Add your description here"
+description = "A tiny helper to print clean, readable info summaries for Polars DataFrames."
 readme = "README.md"
-authors = [
-    { name = "Shion Noguchi", email = "shion24stat@gmail.com" }
-]
 requires-python = ">=3.12"
 dependencies = [
     "polars>=1.38.1",
