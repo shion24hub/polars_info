@@ -8,13 +8,13 @@ import polars as pl
 
 @dataclass(frozen=True)
 class DFInfoSummary:
-    """print_df_info() の要約情報。
+    """Summary information returned by print_df_info().
 
     Attributes:
-        rows: 行数。
-        cols: 列数。
-        estimated_size_bytes: 推定メモリ使用量（バイト）。取得できない場合は None。
-        dtypes: 列名 -> Polars dtype の辞書。
+        rows: Number of rows.
+        cols: Number of columns.
+        estimated_size_bytes: Estimated memory usage in bytes. None if unavailable.
+        dtypes: Mapping of column name to Polars dtype.
     """
 
     rows: int
@@ -24,13 +24,13 @@ class DFInfoSummary:
 
 
 def _bytes_to_human(n_bytes: Optional[int]) -> str:
-    """バイト数を人間向け表記に変換する。
+    """Convert a byte count into a human-readable string.
 
     Args:
-        n_bytes: バイト数。None の場合は不明扱い。
+        n_bytes: Number of bytes. Treated as unknown when None.
 
     Returns:
-        例: "12.34 MiB"、または "Unknown"。
+        A human-readable size string, e.g. "12.34 MiB", or "Unknown".
     """
     if n_bytes is None:
         return "Unknown"
@@ -49,13 +49,13 @@ def _bytes_to_human(n_bytes: Optional[int]) -> str:
 
 
 def _safe_estimated_size_bytes(df: pl.DataFrame) -> Optional[int]:
-    """Polars DataFrame の推定サイズ（bytes）を可能なら取得する。
+    """Return the estimated size in bytes of a Polars DataFrame, if available.
 
     Args:
-        df: Polars DataFrame。
+        df: A Polars DataFrame.
 
     Returns:
-        推定サイズ（bytes）。取得不可なら None。
+        Estimated size in bytes, or None if it cannot be determined.
     """
     try:
         est = getattr(df, "estimated_size", None)
@@ -74,25 +74,28 @@ def _compute_display_indices(
     tail: int,
     max_cols: int,
 ) -> tuple[list[int], bool]:
-    """表示対象の列インデックスと、省略が発生したかを返す。
+    """Return column indices to display and whether any columns were omitted.
 
     Args:
-        n_cols: 全列数。
-        display: 表示モード。
-            - "full": 可能なら全列表示（ただし max_cols で上限）。
-            - "head_tail": 先頭 head 列と末尾 tail 列のみ表示（間は省略）。
-            - "auto": 列数が多い場合は head_tail、少なければ full。
-        head: head_tail モードの先頭表示列数。
-        tail: head_tail モードの末尾表示列数。
-        max_cols: full/auto で full 表示するときの上限（超える場合は head_tail に落とす）。
+        n_cols: Total number of columns.
+        display: Display mode.
+            - "full": Show all columns if possible (capped by max_cols).
+            - "head_tail": Show only the first ``head`` and last ``tail`` columns
+              (columns in between are omitted).
+            - "auto": Use "full" when the column count is within max_cols,
+              otherwise fall back to "head_tail".
+        head: Number of leading columns to show in head_tail mode.
+        tail: Number of trailing columns to show in head_tail mode.
+        max_cols: Upper limit for full/auto display. Exceeding this falls back
+            to head_tail mode.
 
     Returns:
         (indices, omitted):
-            indices: 表示する列のインデックス（昇順）。
-            omitted: 途中省略（...）が入るかどうか。
+            indices: Column indices to display (in ascending order).
+            omitted: Whether an ellipsis ("...") placeholder is needed.
 
     Raises:
-        ValueError: display が不正、または head/tail/max_cols が不正な場合。
+        ValueError: If display is invalid or head/tail/max_cols are out of range.
     """
     if n_cols < 0:
         raise ValueError("n_cols must be >= 0")
@@ -107,14 +110,14 @@ def _compute_display_indices(
         return ([], False)
 
     if display == "auto":
-        # 「全列を出すとNotebookが崩れる」問題を避けるため、
-        # max_cols を超えたら head_tail にフォールバック。
+        # Fall back to head_tail when exceeding max_cols to avoid
+        # cluttering notebooks with too many columns.
         display = "head_tail" if n_cols > max_cols else "full"
 
     if display == "full":
         if n_cols <= max_cols:
             return (list(range(n_cols)), False)
-        # full 指定でも上限は守り、head_tail に落とす
+        # Even in full mode, respect the upper limit and fall back to head_tail
         display = "head_tail"
 
     # head_tail
@@ -131,50 +134,58 @@ def print_df_info(
     df: pl.DataFrame,
     *,
     name: Optional[str] = None,
-    # 追加: 表示短縮の制御
     display: str = "auto",
     head: int = 5,
     tail: int = 5,
     max_cols: int = 60,
-    # 既存: 内容
     show_null_stats: bool = True,
     show_sample: int = 0,
     file: Optional[IO[str]] = None,
 ) -> DFInfoSummary:
-    """polars.DataFrame の info 風サマリを見やすく出力する（列数が多い場合は省略対応）。
+    """Print an info-style summary of a Polars DataFrame, with column truncation support.
 
-    pandas.DataFrame.info() と完全互換ではありませんが、以下を整形して出力します。
-    - DataFrame クラス名
-    - shape（行数・列数）
-    - 推定メモリサイズ（可能な場合）
-    - 各列の dtype
-    - （任意）null / non-null の統計
-    - （任意）先頭 N 行サンプル
+    Not fully compatible with pandas.DataFrame.info(), but formats and prints:
+    - DataFrame class name
+    - Shape (rows and columns)
+    - Estimated memory size (when available)
+    - Dtype of each column
+    - (Optional) Null / non-null statistics
+    - (Optional) Sample of the first N rows
 
-    列数が多い DataFrame では Notebook の視認性が落ちやすいため、`display` で表示量を制御できます。
-    典型例として「先頭5列＋末尾5列だけ出して真ん中を ...」は `display="head_tail", head=5, tail=5`
-    で実現できます（`display="auto"` の既定でも、列数が `max_cols` を超えると自動でそうなります）。
+    For DataFrames with many columns, readability in notebooks can suffer.
+    Use ``display`` to control how many columns are shown.  For example,
+    showing only the first 5 and last 5 columns with "..." in between can be
+    achieved with ``display="head_tail", head=5, tail=5`` (the default
+    ``display="auto"`` does this automatically when the column count exceeds
+    ``max_cols``).
 
     Args:
-        df: 対象の Polars DataFrame。
-        name: 表示用の任意ラベル。
-        display: 列表示モード。
-            - "auto": 列数が `max_cols` を超えると head_tail 表示、それ以下は full 表示。
-            - "head_tail": 先頭 `head` 列＋末尾 `tail` 列のみ表示（間は ...）。
-            - "full": 可能なら全列表示（ただし `max_cols` を超える場合は head_tail にフォールバック）。
-        head: head_tail モードの先頭表示列数。
-        tail: head_tail モードの末尾表示列数。
-        max_cols: full/auto で full 表示するときの上限（超えたら head_tail）。
-        show_null_stats: True の場合、null / non-null 数と null% を表示します。
-        show_sample: 0 より大きい場合、先頭 show_sample 行を最後に表示します。
-        file: 出力先（例: sys.stdout）。None の場合は標準出力に print します。
+        df: The Polars DataFrame to summarize.
+        name: An optional label for display purposes.
+        display: Column display mode.
+            - "auto": Use full display when columns <= ``max_cols``,
+              otherwise fall back to head_tail.
+            - "head_tail": Show only the first ``head`` and last ``tail``
+              columns (with "..." in between).
+            - "full": Show all columns if possible (falls back to head_tail
+              when exceeding ``max_cols``).
+        head: Number of leading columns to show in head_tail mode.
+        tail: Number of trailing columns to show in head_tail mode.
+        max_cols: Upper limit for full/auto display. Exceeds this triggers
+            head_tail mode.
+        show_null_stats: If True, display null count, non-null count and null%.
+        show_sample: If greater than 0, append the first ``show_sample`` rows
+            at the end of the output.
+        file: Output destination (e.g. sys.stdout). Defaults to standard output
+            via print when None.
 
     Returns:
-        DFInfoSummary: サマリ情報（行数・列数・推定サイズ・dtype辞書）。
+        DFInfoSummary: Summary containing row/column counts, estimated size,
+        and a dtype mapping.
 
     Raises:
-        TypeError: df が polars.DataFrame ではない場合。
-        ValueError: 引数が不正な場合。
+        TypeError: If df is not a polars.DataFrame.
+        ValueError: If any argument is invalid.
 
     Examples:
         >>> import polars as pl
@@ -186,7 +197,7 @@ def print_df_info(
 
     out_lines: list[str] = []
 
-    # ヘッダ部
+    # Header section
     out_lines.append(f"<class '{df.__class__.__module__}.{df.__class__.__name__}'>")
     if name:
         out_lines.append(f"Name: {name}")
@@ -203,7 +214,7 @@ def print_df_info(
         cols, display=display, head=head, tail=tail, max_cols=max_cols
     )
 
-    # null統計（まとめて一発で取得）
+    # Null statistics (fetched in a single pass)
     null_by_col: dict[str, int] = {}
     if show_null_stats and cols > 0:
         try:
@@ -212,7 +223,7 @@ def print_df_info(
         except Exception:
             null_by_col = {}
 
-    # 表の列幅（表示対象だけで計算）
+    # Compute column widths (based on displayed columns only)
     display_names = [col_names[i] for i in indices]
     if omitted:
         display_names.append("...")
@@ -228,7 +239,7 @@ def print_df_info(
         else len("Dtype")
     )
 
-    # ヘッダ
+    # Table header
     out_lines.append("Columns:")
     if show_null_stats and null_by_col:
         header = (
@@ -244,7 +255,7 @@ def print_df_info(
     out_lines.append(header)
 
     def fmt_row(idx: int, col: str, dt: pl.DataType) -> str:
-        """表の1行を整形する。"""
+        """Format a single table row."""
         if show_null_stats and null_by_col:
             n_null = null_by_col.get(col, 0)
             n_non_null = rows - n_null
@@ -259,23 +270,23 @@ def print_df_info(
             )
         return f"{idx:>3}  {col:<{max_name_len}}  {str(dt):<{max_dtype_len}}"
 
-    # 行の出力（省略箇所は "..." 行を1つ挿入）
+    # Output rows (insert a single "..." row where columns are omitted)
     if not indices:
         out_lines.append("(no columns)")
     else:
-        # indices は先頭ブロック＋末尾ブロック（必要なら）という前提
-        # 途中が飛ぶタイミングで ... を入れる
+        # indices consists of a head block + an optional tail block.
+        # Insert "..." where there is a gap between consecutive indices.
         prev = None
         for i in indices:
             if prev is not None and i != prev + 1:
-                # 見た目重視で idx 列は空欄にする
+                # Leave the index column blank for visual clarity
                 out_lines.append(
                     f"{'':>3}  {'...':<{max_name_len}}  {'':<{max_dtype_len}}"
                 )
             out_lines.append(fmt_row(i, col_names[i], dtypes[i]))
             prev = i
 
-    # サンプル表示
+    # Sample display
     if show_sample and show_sample > 0:
         out_lines.append(f"Sample (head {show_sample}):")
         out_lines.append(repr(df.head(show_sample)))
