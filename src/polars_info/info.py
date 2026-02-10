@@ -5,6 +5,8 @@ from typing import IO, Optional, Sequence
 
 import polars as pl
 
+from ._formatting import _build_column_table, _bytes_to_human
+
 
 @dataclass(frozen=True)
 class DFInfoSummary:
@@ -23,31 +25,6 @@ class DFInfoSummary:
     dtypes: dict[str, pl.DataType]
 
 
-def _bytes_to_human(n_bytes: Optional[int]) -> str:
-    """Convert a byte count into a human-readable string.
-
-    Args:
-        n_bytes: Number of bytes. Treated as unknown when None.
-
-    Returns:
-        A human-readable size string, e.g. "12.34 MiB", or "Unknown".
-    """
-    if n_bytes is None:
-        return "Unknown"
-    if n_bytes < 0:
-        return str(n_bytes)
-
-    units = ["B", "KiB", "MiB", "GiB", "TiB", "PiB"]
-    size = float(n_bytes)
-    i = 0
-    while size >= 1024.0 and i < len(units) - 1:
-        size /= 1024.0
-        i += 1
-    if i == 0:
-        return f"{int(size)} {units[i]}"
-    return f"{size:.2f} {units[i]}"
-
-
 def _safe_estimated_size_bytes(df: pl.DataFrame) -> Optional[int]:
     """Return the estimated size in bytes of a Polars DataFrame, if available.
 
@@ -64,6 +41,31 @@ def _safe_estimated_size_bytes(df: pl.DataFrame) -> Optional[int]:
         return int(est())
     except Exception:
         return None
+
+
+def _build_header_lines(
+    df: pl.DataFrame,
+    name: Optional[str],
+    est_bytes: Optional[int],
+) -> list[str]:
+    """Build the header section of the info output."""
+    lines: list[str] = []
+    lines.append(f"<class '{df.__class__.__module__}.{df.__class__.__name__}'>")
+    if name:
+        lines.append(f"Name: {name}")
+    rows, cols = df.shape
+    lines.append(f"Shape: ({rows:,}, {cols:,})")
+    lines.append(f"Estimated size: {_bytes_to_human(est_bytes)}")
+    return lines
+
+
+def _collect_null_counts(df: pl.DataFrame) -> dict[str, int]:
+    """Collect per-column null counts, returning empty dict on failure."""
+    try:
+        raw = df.null_count().row(0, named=True)  # type: ignore[assignment]
+        return {k: int(v) for k, v in raw.items()}
+    except Exception:
+        return {}
 
 
 def _compute_display_indices(
@@ -110,14 +112,11 @@ def _compute_display_indices(
         return ([], False)
 
     if display == "auto":
-        # Fall back to head_tail when exceeding max_cols to avoid
-        # cluttering notebooks with too many columns.
         display = "head_tail" if n_cols > max_cols else "full"
 
     if display == "full":
         if n_cols <= max_cols:
             return (list(range(n_cols)), False)
-        # Even in full mode, respect the upper limit and fall back to head_tail
         display = "head_tail"
 
     # head_tail
@@ -195,98 +194,25 @@ def print_df_info(
     if not isinstance(df, pl.DataFrame):
         raise TypeError(f"df must be polars.DataFrame, got {type(df)!r}")
 
-    out_lines: list[str] = []
-
-    # Header section
-    out_lines.append(f"<class '{df.__class__.__module__}.{df.__class__.__name__}'>")
-    if name:
-        out_lines.append(f"Name: {name}")
-
     rows, cols = df.shape
     est_bytes = _safe_estimated_size_bytes(df)
-    out_lines.append(f"Shape: ({rows:,}, {cols:,})")
-    out_lines.append(f"Estimated size: {_bytes_to_human(est_bytes)}")
 
-    col_names: Sequence[str] = df.columns
-    dtypes: Sequence[pl.DataType] = df.dtypes
+    out_lines = _build_header_lines(df, name, est_bytes)
 
     indices, omitted = _compute_display_indices(
         cols, display=display, head=head, tail=tail, max_cols=max_cols
     )
 
-    # Null statistics (fetched in a single pass)
-    null_by_col: dict[str, int] = {}
-    if show_null_stats and cols > 0:
-        try:
-            null_by_col = df.null_count().row(0, named=True)  # type: ignore[assignment]
-            null_by_col = {k: int(v) for k, v in null_by_col.items()}
-        except Exception:
-            null_by_col = {}
+    null_by_col = _collect_null_counts(df) if show_null_stats and cols > 0 else {}
 
-    # Compute column widths (based on displayed columns only)
-    display_names = [col_names[i] for i in indices]
-    if omitted:
-        display_names.append("...")
-
-    max_name_len = (
-        max([len("Column")] + [len(n) for n in display_names])
-        if cols
-        else len("Column")
-    )
-    max_dtype_len = (
-        max([len("Dtype")] + [len(str(dtypes[i])) for i in indices])
-        if cols
-        else len("Dtype")
-    )
-
-    # Table header
-    out_lines.append("Columns:")
-    if show_null_stats and null_by_col:
-        header = (
-            f"{'#':>3}  "
-            f"{'Column':<{max_name_len}}  "
-            f"{'Dtype':<{max_dtype_len}}  "
-            f"{'Non-Null':>8}  "
-            f"{'Null':>6}  "
-            f"{'Null%':>6}"
+    out_lines.extend(
+        _build_column_table(
+            df.columns, df.dtypes, indices, omitted, rows,
+            show_null_stats=show_null_stats,
+            null_by_col=null_by_col,
         )
-    else:
-        header = f"{'#':>3}  {'Column':<{max_name_len}}  {'Dtype':<{max_dtype_len}}"
-    out_lines.append(header)
+    )
 
-    def fmt_row(idx: int, col: str, dt: pl.DataType) -> str:
-        """Format a single table row."""
-        if show_null_stats and null_by_col:
-            n_null = null_by_col.get(col, 0)
-            n_non_null = rows - n_null
-            null_pct = (n_null / rows * 100.0) if rows else 0.0
-            return (
-                f"{idx:>3}  "
-                f"{col:<{max_name_len}}  "
-                f"{str(dt):<{max_dtype_len}}  "
-                f"{n_non_null:>8,}  "
-                f"{n_null:>6,}  "
-                f"{null_pct:>5.2f}%"
-            )
-        return f"{idx:>3}  {col:<{max_name_len}}  {str(dt):<{max_dtype_len}}"
-
-    # Output rows (insert a single "..." row where columns are omitted)
-    if not indices:
-        out_lines.append("(no columns)")
-    else:
-        # indices consists of a head block + an optional tail block.
-        # Insert "..." where there is a gap between consecutive indices.
-        prev = None
-        for i in indices:
-            if prev is not None and i != prev + 1:
-                # Leave the index column blank for visual clarity
-                out_lines.append(
-                    f"{'':>3}  {'...':<{max_name_len}}  {'':<{max_dtype_len}}"
-                )
-            out_lines.append(fmt_row(i, col_names[i], dtypes[i]))
-            prev = i
-
-    # Sample display
     if show_sample and show_sample > 0:
         out_lines.append(f"Sample (head {show_sample}):")
         out_lines.append(repr(df.head(show_sample)))
