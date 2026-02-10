@@ -1,0 +1,5 @@
+uv run twine upload \
+    --repository-url https://test.pypi.org/legacy/ \
+    -u __token__ \
+    -p '...' \
+    dist/*
