@@ -217,8 +217,16 @@ def print_df_info(
     if omitted:
         display_names.append("...")
 
-    max_name_len = max([len("Column")] + [len(n) for n in display_names]) if cols else len("Column")
-    max_dtype_len = max([len("Dtype")] + [len(str(dtypes[i])) for i in indices]) if cols else len("Dtype")
+    max_name_len = (
+        max([len("Column")] + [len(n) for n in display_names])
+        if cols
+        else len("Column")
+    )
+    max_dtype_len = (
+        max([len("Dtype")] + [len(str(dtypes[i])) for i in indices])
+        if cols
+        else len("Dtype")
+    )
 
     # ヘッダ
     out_lines.append("Columns:")
@@ -261,7 +269,9 @@ def print_df_info(
         for i in indices:
             if prev is not None and i != prev + 1:
                 # 見た目重視で idx 列は空欄にする
-                out_lines.append(f"{'':>3}  {'...':<{max_name_len}}  {'':<{max_dtype_len}}")
+                out_lines.append(
+                    f"{'':>3}  {'...':<{max_name_len}}  {'':<{max_dtype_len}}"
+                )
             out_lines.append(fmt_row(i, col_names[i], dtypes[i]))
             prev = i
 
