@@ -16,5 +16,6 @@ build-backend = "uv_build"
 dev = [
     "black>=26.1.0",
     "isort>=7.0.0",
+    "pytest>=9.0.2",
     "twine>=6.2.0",
 ]
